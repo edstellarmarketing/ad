@@ -504,7 +504,8 @@ def init_ad_overrides():
 
 # ─── OpenRouter LLM Config ───
 OPENROUTER_MODELS = {
-    "Claude 4 Sonnet (Recommended)": "anthropic/claude-sonnet-4",
+    "Claude Opus 4 (Default)": "anthropic/claude-opus-4",
+    "Claude Sonnet 4": "anthropic/claude-sonnet-4",
     "Claude 3.5 Sonnet": "anthropic/claude-3.5-sonnet",
     "Claude 3.5 Haiku (Fast)": "anthropic/claude-3.5-haiku",
     "GPT-4o": "openai/gpt-4o",
@@ -514,10 +515,27 @@ OPENROUTER_MODELS = {
     "DeepSeek V3": "deepseek/deepseek-chat-v3-0324",
 }
 
+# Load API key: st.secrets first, then session_state (manual input)
+def _get_secrets_key():
+    """Try to read OPENROUTER_API_KEY from Streamlit secrets."""
+    try:
+        return st.secrets.get("OPENROUTER_API_KEY", "")
+    except Exception:
+        return ""
+
+_secrets_key = _get_secrets_key()
+
 if "openrouter_api_key" not in st.session_state:
-    st.session_state["openrouter_api_key"] = ""
+    st.session_state["openrouter_api_key"] = _secrets_key or ""
+elif _secrets_key and not st.session_state["openrouter_api_key"]:
+    # If secrets has a key but session doesn't, use secrets
+    st.session_state["openrouter_api_key"] = _secrets_key
+
 if "openrouter_model" not in st.session_state:
-    st.session_state["openrouter_model"] = "Claude 4 Sonnet (Recommended)"
+    st.session_state["openrouter_model"] = "Claude Opus 4 (Default)"
+
+# Track if key came from secrets
+_key_from_secrets = bool(_secrets_key)
 
 
 def call_llm(prompt, system_prompt="", max_tokens=1000):
@@ -718,21 +736,26 @@ with st.sidebar:
     # ── AI / LLM Config ──
     st.markdown('<div class="section-label">🤖 AI Model (OpenRouter)</div>', unsafe_allow_html=True)
 
-    api_key_input = st.text_input(
-        "OpenRouter API Key",
-        value=st.session_state.get("openrouter_api_key", ""),
-        type="password",
-        placeholder="sk-or-v1-...",
-        help="Get your key at openrouter.ai/keys",
-    )
-    if api_key_input != st.session_state.get("openrouter_api_key", ""):
-        st.session_state["openrouter_api_key"] = api_key_input
+    if _key_from_secrets:
+        # Key loaded from secrets — show status, no manual input needed
+        st.caption("🔐 API key loaded from Streamlit Secrets")
+    else:
+        # Manual key input
+        api_key_input = st.text_input(
+            "OpenRouter API Key",
+            value=st.session_state.get("openrouter_api_key", ""),
+            type="password",
+            placeholder="sk-or-v1-...",
+            help="Get your key at openrouter.ai/keys — or add OPENROUTER_API_KEY to Streamlit Secrets",
+        )
+        if api_key_input != st.session_state.get("openrouter_api_key", ""):
+            st.session_state["openrouter_api_key"] = api_key_input
 
     if has_llm():
         st.session_state["openrouter_model"] = st.selectbox(
             "Model",
             list(OPENROUTER_MODELS.keys()),
-            index=list(OPENROUTER_MODELS.keys()).index(st.session_state.get("openrouter_model", "Claude 4 Sonnet (Recommended)")),
+            index=list(OPENROUTER_MODELS.keys()).index(st.session_state.get("openrouter_model", "Claude Opus 4 (Default)")),
         )
         st.success(f"✅ Connected — {st.session_state['openrouter_model']}")
     else:
