@@ -5,6 +5,8 @@ import zipfile
 import asyncio
 import tempfile
 import os
+import json
+import requests
 from pathlib import Path
 
 # ─── Page Config ───
@@ -500,6 +502,165 @@ def init_ad_overrides():
                 st.session_state[key] = ""
 
 
+# ─── OpenRouter LLM Config ───
+OPENROUTER_MODELS = {
+    "Claude 4 Sonnet (Recommended)": "anthropic/claude-sonnet-4",
+    "Claude 3.5 Sonnet": "anthropic/claude-3.5-sonnet",
+    "Claude 3.5 Haiku (Fast)": "anthropic/claude-3.5-haiku",
+    "GPT-4o": "openai/gpt-4o",
+    "GPT-4o Mini (Fast)": "openai/gpt-4o-mini",
+    "Gemini 2.0 Flash": "google/gemini-2.0-flash-001",
+    "Llama 3.3 70B": "meta-llama/llama-3.3-70b-instruct",
+    "DeepSeek V3": "deepseek/deepseek-chat-v3-0324",
+}
+
+if "openrouter_api_key" not in st.session_state:
+    st.session_state["openrouter_api_key"] = ""
+if "openrouter_model" not in st.session_state:
+    st.session_state["openrouter_model"] = "Claude 4 Sonnet (Recommended)"
+
+
+def call_llm(prompt, system_prompt="", max_tokens=1000):
+    """Call OpenRouter API and return the response text."""
+    api_key = st.session_state.get("openrouter_api_key", "")
+    if not api_key:
+        return None
+
+    model = OPENROUTER_MODELS.get(st.session_state.get("openrouter_model", ""), "anthropic/claude-sonnet-4")
+
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
+    try:
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://edstellar.com",
+                "X-Title": "Edstellar AdRoll Creative Studio",
+            },
+            json={
+                "model": model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": 0.8,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data["choices"][0]["message"]["content"]
+    except Exception as e:
+        st.error(f"LLM API Error: {str(e)}")
+        return None
+
+
+AD_SYSTEM_PROMPT = """You are an expert ad copywriter for corporate training retargeting ads.
+You write for Edstellar, a global corporate training company with 2000+ courses, 5000+ trainers, 100+ locations, and Fortune 500 clients like Visa, Microsoft, Amazon, Intel.
+
+The ads target HR/L&D professionals who visited Edstellar training pages but didn't enquire. Goal: make them come back and submit an enquiry.
+
+RULES:
+- Headlines must be punchy, under 8 words
+- CTAs must be action-oriented, under 6 words
+- Subtexts must be 1 short sentence
+- Benefits must be 3 bullet points, each under 8 words
+- Never use quotes or special characters
+- Return ONLY valid JSON, no markdown"""
+
+
+def generate_ad_content_llm(prompt, ad_id=None, ad_label=""):
+    """Use LLM to generate ad content. Returns dict with headline, cta, subtext, benefits."""
+    fields_needed = list(AD_FIELDS.get(ad_id, {}).keys()) if ad_id else ["headline", "cta", "subtext", "benefits"]
+
+    user_prompt = f"""Generate ad copy for a retargeting display ad.
+Ad format: {ad_label or 'General'}
+User request: {prompt}
+
+Company context: {st.session_state.get('company_name', 'Edstellar')} - corporate training company.
+Stats: {st.session_state.get('stat1','2000+')} courses, {st.session_state.get('stat2','5000+')} trainers, {st.session_state.get('stat3','100+')} locations.
+
+Return ONLY a JSON object with these fields (include only the ones listed):
+{json.dumps({f: "string value" for f in fields_needed})}
+
+For "benefits", return a string with items separated by newlines.
+Return ONLY the JSON, no other text."""
+
+    result = call_llm(user_prompt, AD_SYSTEM_PROMPT, max_tokens=500)
+    if not result:
+        return None
+
+    # Parse JSON from response
+    try:
+        # Clean up response - extract JSON
+        result = result.strip()
+        if result.startswith("```"):
+            result = result.split("```")[1]
+            if result.startswith("json"):
+                result = result[4:]
+        result = result.strip()
+        return json.loads(result)
+    except json.JSONDecodeError:
+        # Try to find JSON in the response
+        try:
+            start = result.index("{")
+            end = result.rindex("}") + 1
+            return json.loads(result[start:end])
+        except (ValueError, json.JSONDecodeError):
+            st.error("Failed to parse LLM response. Using preset fallback.")
+            return None
+
+
+def generate_all_ads_llm(prompt):
+    """Use LLM to generate content for ALL ad creatives at once."""
+    user_prompt = f"""Generate ad copy for 9 retargeting display ads for a corporate training company.
+User request: {prompt}
+
+Company: {st.session_state.get('company_name', 'Edstellar')}
+Stats: {st.session_state.get('stat1','2000+')} courses, {st.session_state.get('stat2','5000+')} trainers, {st.session_state.get('stat3','100+')} locations.
+Clients: {st.session_state.get('clients', 'VISA, MICROSOFT, AMAZON, INTEL')}
+
+Generate content for these ad formats. Return ONLY a JSON object:
+{{
+  "headline1": "headline for 300x250 dark urgency ad (max 8 words)",
+  "headline2": "headline for 300x250 light social proof ad (max 8 words)",
+  "headline3": "headline for 300x250 gradient benefits ad (max 6 words)",
+  "headline4": "headline for 728x90 leaderboard ad (max 8 words)",
+  "cta_text": "main CTA button text (max 5 words with arrow)",
+  "benefits": "benefit 1\\nbenefit 2\\nbenefit 3"
+}}
+
+Return ONLY the JSON, no other text."""
+
+    result = call_llm(user_prompt, AD_SYSTEM_PROMPT, max_tokens=600)
+    if not result:
+        return None
+
+    try:
+        result = result.strip()
+        if result.startswith("```"):
+            result = result.split("```")[1]
+            if result.startswith("json"):
+                result = result[4:]
+        result = result.strip()
+        return json.loads(result)
+    except json.JSONDecodeError:
+        try:
+            start = result.index("{")
+            end = result.rindex("}") + 1
+            return json.loads(result[start:end])
+        except (ValueError, json.JSONDecodeError):
+            return None
+
+
+def has_llm():
+    """Check if OpenRouter API key is configured."""
+    return bool(st.session_state.get("openrouter_api_key", ""))
+
+
 init_ad_overrides()
 with st.sidebar:
     st.markdown("### ✦ AdRoll Creative Studio")
@@ -525,6 +686,30 @@ with st.sidebar:
             st.session_state["logo_light_data"] = logo_light_file.read()
             st.image(st.session_state["logo_light_data"], width=80)
 
+    # ── AI / LLM Config ──
+    st.markdown('<div class="section-label">🤖 AI Model (OpenRouter)</div>', unsafe_allow_html=True)
+
+    api_key_input = st.text_input(
+        "OpenRouter API Key",
+        value=st.session_state.get("openrouter_api_key", ""),
+        type="password",
+        placeholder="sk-or-v1-...",
+        help="Get your key at openrouter.ai/keys",
+    )
+    if api_key_input != st.session_state.get("openrouter_api_key", ""):
+        st.session_state["openrouter_api_key"] = api_key_input
+
+    if has_llm():
+        st.session_state["openrouter_model"] = st.selectbox(
+            "Model",
+            list(OPENROUTER_MODELS.keys()),
+            index=list(OPENROUTER_MODELS.keys()).index(st.session_state.get("openrouter_model", "Claude 4 Sonnet (Recommended)")),
+        )
+        st.success(f"✅ Connected — {st.session_state['openrouter_model']}")
+    else:
+        st.caption("Add API key to enable AI-powered ad copy generation. Without a key, quick presets are still available.")
+        st.markdown("[🔑 Get OpenRouter API Key](https://openrouter.ai/keys)", unsafe_allow_html=True)
+
     # ── AI Prompt ──
     st.markdown('<div class="section-label">AI Creative Prompt</div>', unsafe_allow_html=True)
 
@@ -542,25 +727,51 @@ with st.sidebar:
     )
     if st.button("✨ Generate from Prompt", use_container_width=True, type="primary"):
         if ai_prompt:
-            lower = ai_prompt.lower()
-            picked = "🎯 Benefits"
-            if any(w in lower for w in ["urgent", "hurry", "limited", "fast", "now"]):
-                picked = "🔥 Urgency"
-            elif any(w in lower for w in ["trust", "client", "social", "proof", "fortune"]):
-                picked = "⭐ Social Proof"
-            elif any(w in lower for w in ["re-engage", "retarget", "come back", "welcome", "still"]):
-                picked = "🔄 Re-engage"
-            elif any(w in lower for w in ["clean", "minimal", "simple", "subtle"]):
-                picked = "◻ Minimal"
-            for k, val in PRESETS[picked].items():
-                st.session_state[k] = val
-            # Extract colors from prompt
-            if "red" in lower: st.session_state["color_accent"] = "#EF4444"
-            if "green" in lower: st.session_state["color_accent"] = "#10B981"
-            if "purple" in lower: st.session_state["color_primary"] = "#7C3AED"
-            if "orange" in lower: st.session_state["color_accent"] = "#F97316"
-            if "teal" in lower: st.session_state["color_primary"] = "#0D9488"
-            st.toast(f'Applied "{picked}" style')
+            if has_llm():
+                # ── Use LLM ──
+                with st.spinner(f"🤖 Generating with {st.session_state['openrouter_model']}..."):
+                    result = generate_all_ads_llm(ai_prompt)
+                    if result:
+                        for k in ["headline1", "headline2", "headline3", "headline4", "cta_text", "benefits"]:
+                            if k in result and result[k]:
+                                st.session_state[k] = result[k]
+                        st.toast("✅ AI generated all ad content!")
+                    else:
+                        st.warning("LLM failed — falling back to preset matching")
+                        # Fallback to preset
+                        lower = ai_prompt.lower()
+                        picked = "🎯 Benefits"
+                        if any(w in lower for w in ["urgent", "hurry", "limited", "fast", "now"]):
+                            picked = "🔥 Urgency"
+                        elif any(w in lower for w in ["trust", "client", "social", "proof", "fortune"]):
+                            picked = "⭐ Social Proof"
+                        elif any(w in lower for w in ["re-engage", "retarget", "come back", "welcome", "still"]):
+                            picked = "🔄 Re-engage"
+                        elif any(w in lower for w in ["clean", "minimal", "simple", "subtle"]):
+                            picked = "◻ Minimal"
+                        for k, val in PRESETS[picked].items():
+                            st.session_state[k] = val
+                        st.toast(f'Applied "{picked}" preset as fallback')
+            else:
+                # ── No API key — use preset matching ──
+                lower = ai_prompt.lower()
+                picked = "🎯 Benefits"
+                if any(w in lower for w in ["urgent", "hurry", "limited", "fast", "now"]):
+                    picked = "🔥 Urgency"
+                elif any(w in lower for w in ["trust", "client", "social", "proof", "fortune"]):
+                    picked = "⭐ Social Proof"
+                elif any(w in lower for w in ["re-engage", "retarget", "come back", "welcome", "still"]):
+                    picked = "🔄 Re-engage"
+                elif any(w in lower for w in ["clean", "minimal", "simple", "subtle"]):
+                    picked = "◻ Minimal"
+                for k, val in PRESETS[picked].items():
+                    st.session_state[k] = val
+                if "red" in lower: st.session_state["color_accent"] = "#EF4444"
+                if "green" in lower: st.session_state["color_accent"] = "#10B981"
+                if "purple" in lower: st.session_state["color_primary"] = "#7C3AED"
+                if "orange" in lower: st.session_state["color_accent"] = "#F97316"
+                if "teal" in lower: st.session_state["color_primary"] = "#0D9488"
+                st.toast(f'Applied "{picked}" style (add API key for AI generation)')
             st.rerun()
 
     # ── Content Settings ──
@@ -670,29 +881,43 @@ def render_ad_card(a):
         with ai_col2:
             if st.button("✨ Apply", key=f"aigen_{ad_id}", use_container_width=True):
                 if ad_prompt:
-                    lower = ad_prompt.lower()
-                    picked = "🎯 Benefits"
-                    if any(w in lower for w in ["urgent", "hurry", "limited", "fast", "now", "rush"]):
-                        picked = "🔥 Urgency"
-                    elif any(w in lower for w in ["trust", "client", "social", "proof", "fortune", "company"]):
-                        picked = "⭐ Social Proof"
-                    elif any(w in lower for w in ["re-engage", "retarget", "come back", "welcome", "still", "return"]):
-                        picked = "🔄 Re-engage"
-                    elif any(w in lower for w in ["clean", "minimal", "simple", "subtle", "short"]):
-                        picked = "◻ Minimal"
+                    if has_llm():
+                        # ── Use LLM for this specific ad ──
+                        with st.spinner(f"🤖 Generating..."):
+                            result = generate_ad_content_llm(ad_prompt, ad_id, a["label"])
+                            if result:
+                                for f in fields:
+                                    if f in result and result[f]:
+                                        st.session_state[f"ovr_{ad_id}_{f}"] = result[f]
+                                st.toast(f"✅ AI updated {a['label']}")
+                                st.rerun()
+                            else:
+                                st.warning("LLM failed — using preset fallback")
+                    # Fallback: keyword matching to presets
+                    if not has_llm() or not result:
+                        lower = ad_prompt.lower()
+                        picked = "🎯 Benefits"
+                        if any(w in lower for w in ["urgent", "hurry", "limited", "fast", "now", "rush"]):
+                            picked = "🔥 Urgency"
+                        elif any(w in lower for w in ["trust", "client", "social", "proof", "fortune", "company"]):
+                            picked = "⭐ Social Proof"
+                        elif any(w in lower for w in ["re-engage", "retarget", "come back", "welcome", "still", "return"]):
+                            picked = "🔄 Re-engage"
+                        elif any(w in lower for w in ["clean", "minimal", "simple", "subtle", "short"]):
+                            picked = "◻ Minimal"
 
-                    preset = AD_AI_PRESETS[picked]
-                    if "headline" in fields:
-                        st.session_state[f"ovr_{ad_id}_headline"] = preset.get("headline", "")
-                    if "cta" in fields:
-                        st.session_state[f"ovr_{ad_id}_cta"] = preset.get("cta", "")
-                    if "subtext" in fields:
-                        st.session_state[f"ovr_{ad_id}_subtext"] = preset.get("subtext", "")
-                    if "benefits" in fields:
-                        st.session_state[f"ovr_{ad_id}_benefits"] = preset.get("benefits", "")
+                        preset = AD_AI_PRESETS[picked]
+                        if "headline" in fields:
+                            st.session_state[f"ovr_{ad_id}_headline"] = preset.get("headline", "")
+                        if "cta" in fields:
+                            st.session_state[f"ovr_{ad_id}_cta"] = preset.get("cta", "")
+                        if "subtext" in fields:
+                            st.session_state[f"ovr_{ad_id}_subtext"] = preset.get("subtext", "")
+                        if "benefits" in fields:
+                            st.session_state[f"ovr_{ad_id}_benefits"] = preset.get("benefits", "")
 
-                    st.toast(f'Applied "{picked}" to {a["label"]}')
-                    st.rerun()
+                        st.toast(f'Applied "{picked}" to {a["label"]}')
+                        st.rerun()
 
         # Quick preset chips
         preset_cols = st.columns(5)
