@@ -524,6 +524,7 @@ def call_llm(prompt, system_prompt="", max_tokens=1000):
     """Call OpenRouter API and return the response text."""
     api_key = st.session_state.get("openrouter_api_key", "")
     if not api_key:
+        st.warning("No API key found. Please enter your OpenRouter API key in the sidebar.")
         return None
 
     model = OPENROUTER_MODELS.get(st.session_state.get("openrouter_model", ""), "anthropic/claude-sonnet-4")
@@ -550,11 +551,27 @@ def call_llm(prompt, system_prompt="", max_tokens=1000):
             },
             timeout=30,
         )
-        response.raise_for_status()
+
+        if response.status_code != 200:
+            error_msg = response.text[:200]
+            st.error(f"API Error {response.status_code}: {error_msg}")
+            return None
+
         data = response.json()
+
+        if "error" in data:
+            st.error(f"API Error: {data['error'].get('message', str(data['error']))}")
+            return None
+
         return data["choices"][0]["message"]["content"]
+    except requests.exceptions.Timeout:
+        st.error("API request timed out (30s). Try again or use a faster model.")
+        return None
+    except requests.exceptions.ConnectionError:
+        st.error("Cannot connect to OpenRouter API. Check your internet connection.")
+        return None
     except Exception as e:
-        st.error(f"LLM API Error: {str(e)}")
+        st.error(f"LLM Error: {type(e).__name__}: {str(e)}")
         return None
 
 
@@ -893,20 +910,23 @@ def render_ad_card(a):
         with ai_col2:
             if st.button("✨ Apply", key=f"aigen_{ad_id}", use_container_width=True):
                 if ad_prompt:
+                    applied = False
+
+                    # Try LLM first if available
                     if has_llm():
-                        # ── Use LLM for this specific ad ──
                         with st.spinner(f"🤖 Generating..."):
-                            result = generate_ad_content_llm(ad_prompt, ad_id, a["label"])
-                            if result:
+                            llm_result = generate_ad_content_llm(ad_prompt, ad_id, a["label"])
+                            if llm_result:
                                 for f in fields:
-                                    if f in result and result[f]:
-                                        st.session_state[f"ovr_{ad_id}_{f}"] = result[f]
+                                    if f in llm_result and llm_result[f]:
+                                        st.session_state[f"ovr_{ad_id}_{f}"] = llm_result[f]
                                 st.toast(f"✅ AI updated {a['label']}")
-                                st.rerun()
+                                applied = True
                             else:
-                                st.warning("LLM failed — using preset fallback")
+                                st.warning("LLM call failed — using preset fallback")
+
                     # Fallback: keyword matching to presets
-                    if not has_llm() or not result:
+                    if not applied:
                         lower = ad_prompt.lower()
                         picked = "🎯 Benefits"
                         if any(w in lower for w in ["urgent", "hurry", "limited", "fast", "now", "rush"]):
@@ -918,18 +938,19 @@ def render_ad_card(a):
                         elif any(w in lower for w in ["clean", "minimal", "simple", "subtle", "short"]):
                             picked = "◻ Minimal"
 
-                        preset = AD_AI_PRESETS[picked]
+                        preset_data = AD_AI_PRESETS[picked]
                         if "headline" in fields:
-                            st.session_state[f"ovr_{ad_id}_headline"] = preset.get("headline", "")
+                            st.session_state[f"ovr_{ad_id}_headline"] = preset_data.get("headline", "")
                         if "cta" in fields:
-                            st.session_state[f"ovr_{ad_id}_cta"] = preset.get("cta", "")
+                            st.session_state[f"ovr_{ad_id}_cta"] = preset_data.get("cta", "")
                         if "subtext" in fields:
-                            st.session_state[f"ovr_{ad_id}_subtext"] = preset.get("subtext", "")
+                            st.session_state[f"ovr_{ad_id}_subtext"] = preset_data.get("subtext", "")
                         if "benefits" in fields:
-                            st.session_state[f"ovr_{ad_id}_benefits"] = preset.get("benefits", "")
+                            st.session_state[f"ovr_{ad_id}_benefits"] = preset_data.get("benefits", "")
 
                         st.toast(f'Applied "{picked}" to {a["label"]}')
-                        st.rerun()
+
+                    st.rerun()
 
         # Quick preset chips
         preset_cols = st.columns(5)
