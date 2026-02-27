@@ -674,17 +674,29 @@ with st.sidebar:
         st.markdown("**☀️ For Dark BG**")
         st.caption("Light / white logo")
         logo_dark_file = st.file_uploader("Upload", type=["png", "jpg", "jpeg", "svg", "webp"], key="logo_dark_up", label_visibility="collapsed")
-        if logo_dark_file:
-            st.session_state["logo_dark_data"] = logo_dark_file.read()
+        if logo_dark_file is not None:
+            logo_bytes = logo_dark_file.getvalue()
+            if logo_bytes:
+                st.session_state["logo_dark_data"] = logo_bytes
+        if st.session_state.get("logo_dark_data"):
             st.image(st.session_state["logo_dark_data"], width=80)
+            if st.button("✕ Remove", key="rm_logo_dark"):
+                st.session_state["logo_dark_data"] = None
+                st.rerun()
 
     with col_l:
         st.markdown("**🌙 For Light BG**")
         st.caption("Dark / colored logo")
         logo_light_file = st.file_uploader("Upload", type=["png", "jpg", "jpeg", "svg", "webp"], key="logo_light_up", label_visibility="collapsed")
-        if logo_light_file:
-            st.session_state["logo_light_data"] = logo_light_file.read()
+        if logo_light_file is not None:
+            logo_bytes = logo_light_file.getvalue()
+            if logo_bytes:
+                st.session_state["logo_light_data"] = logo_bytes
+        if st.session_state.get("logo_light_data"):
             st.image(st.session_state["logo_light_data"], width=80)
+            if st.button("✕ Remove", key="rm_logo_light"):
+                st.session_state["logo_light_data"] = None
+                st.rerun()
 
     # ── AI / LLM Config ──
     st.markdown('<div class="section-label">🤖 AI Model (OpenRouter)</div>', unsafe_allow_html=True)
